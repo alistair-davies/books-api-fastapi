@@ -1,59 +1,81 @@
 # main.py
-
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import sqlite3
 
 app = FastAPI()
+db_file = "books.db"
 
-class Book(BaseModel):
-    id: int
+class BookData(BaseModel):
     title: str
     author: str
 
-class BookCreate(BaseModel):
-    title: str
-    author: str
-
+def get_connection():
+    """Create a database connection and return rows as dictionaries."""
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 @app.get("/")
 def home():
-    return {"message" : "Book API running"}
+    """Simple health check endpoint."""
+    return {"message": "Book API running"}
 
 @app.get("/books")
 def get_books():
-    with sqlite3.connect("books.db") as conn:
+    """Return all books in the database."""
+    with get_connection() as conn:
         cursor = conn.cursor()
 
         cursor.execute("SELECT * FROM books")
 
         rows = cursor.fetchall()
 
-    books = []
+    return [dict(row) for row in rows]
 
-    for row in rows: 
-        books.append({
-            "id" : row[0],
-            "title" : row[1],
-            "author" : row[2]
-        })
-    return books
+
 
 @app.get("/books/{book_id}")
 def get_single_book(book_id: int):
-    with sqlite3.connect("books.db") as conn:
+    """Return a single book by its ID."""
+    with get_connection() as conn:
         cursor = conn.cursor()
 
         cursor.execute("SELECT * FROM books WHERE id = ?", (book_id,))
 
         book = cursor.fetchone()
-    return book
+
+    if book is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = "Book not found"
+        )
+    
+    return dict(book)
 
 @app.post("/books")
-def add_book(book: BookCreate):
-    with sqlite3.connect("books.db") as conn:
+def add_book(book: BookData):
+    """Add a new book to the database."""
+    with get_connection() as conn:
         cursor = conn.cursor()
+        # Check for existing book
+        cursor.execute(
+            """
+            SELECT * FROM books
+            WHERE title = ? AND author = ?
+            """,
+            (book.title, book.author)
+        )
 
+        existing_book = cursor.fetchone()
+
+        if existing_book: 
+            raise HTTPException(
+                status_code = 409,
+                detail = "Book already exists in database"
+            )
+
+        # Insert new book 
         cursor.execute(
             """
             INSERT INTO books (title, author)
@@ -63,11 +85,36 @@ def add_book(book: BookCreate):
 
         conn.commit()
 
-    return {"message" : "Book added"}
+    return {"message": "Book added"}
+
+@app.put("/books/{book_id}")
+def update_book(book_id: int, book: BookData):
+    """Update an existing book by ID."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE books
+            SET title = ?, author = ?
+            WHERE id = ?
+            """,
+            (book.title, book.author, book_id)
+        )
+
+        if cursor.rowcount == 0:
+            raise HTTPException(
+                status_code = 404,
+                detail = "Book not found"
+            )
+
+        conn.commit()
+    return {"message": "Book updated"}
 
 @app.delete("/books/{book_id}")
 def delete_book(book_id: int):
-    with sqlite3.connect("books.db") as conn:
+    """Delete a book by its ID."""
+    with get_connection() as conn:
         cursor = conn.cursor()
 
         cursor.execute(
@@ -77,8 +124,11 @@ def delete_book(book_id: int):
 
         # Check whether anything was deleted
         if cursor.rowcount == 0:
-            return {"error" : "Book not found"}
+            raise HTTPException(
+                status_code = 404,
+                detail = "Book not found"
+            )
 
         conn.commit()
 
-    return {"message" : "Book deleted"}
+    return {"message": "Book deleted"}
